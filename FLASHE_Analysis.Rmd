@@ -1,0 +1,342 @@
+---
+title: "Models w/o Sedentary Score"
+author: "Aine O'Connor"
+date: "11/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+# Packages used in analysis
+library(haven)
+library(sas7bdat)
+library(plyr)
+library(readr)
+library(tidyverse)
+library(nnet)
+library(MASS)
+library(funModeling)
+library(brant)
+library(arsenal)
+library(lmtest)
+library(table1)
+library(mice)
+library(summarytools)
+library(car)
+
+# Import and read FLASHE data for adolescent physical activity and demographic
+
+# Read in data: adolescent physical activity
+adolescentPA <- read_sas("Teen Physical Activity SAS/teenpa_public_updated.sas7bdat", 
+    NULL)
+
+# Read in data: adolescent demographics
+adolescentdemo <- read_sas("Teen Demographic SAS/TeenDemo_public_09022015.sas7bdat", NULL)
+
+# Read in data: parent demographics
+parentdemo <- read_sas("Parent Demographic SAS/ParentDemo_public_09022015.sas7bdat", NULL)
+
+# Merge datasets by Dyad ID: adolescent physical activity & demographics (yields n=1,661)
+adolescent.merged <- merge(adolescentPA, adolescentdemo, by = "DYADID")
+
+# Merge full adolescent dataset with parent dataset by Dyad ID (yields n=1,649)
+merged.data <- merge(adolescent.merged, parentdemo, by = "DYADID")
+
+# Create subset of data with variables of interest
+df <- data.frame(merged.data$PID.x, merged.data$DYADID, merged.data$XTBMI, merged.data$XTWGHTSTAT, merged.data$XTYAPOUTOFSCHOOL, merged.data$XTYAPWEEKEND, merged.data$XTPREDWEEKOFS, merged.data$XTPREDWEEKW, merged.data$TPANTRAILS, merged.data$TPANPLAYFLD, merged.data$TPANPUBPRK, merged.data$TPANSTORE, merged.data$TPCRIME, merged.data$TPTRAFFIC, merged.data$TAGE, merged.data$TSEX, merged.data$TETHRAC_RC, merged.data$PHSEHLDINCM_RC, merged.data$XPTCOVTYPE)
+
+# Rename variables
+
+# Check variable names
+colnames(df)
+
+# Name variables for comprehension
+names(df)[1:19]<-c("ID", "DYAD_ID", "BMI", "weight_cat", "PAscore_oos", "PAscore_wknd", "PAmin_oostotal", "PAmin_wkndtotal", "trails", "fields_courts", "parks", "walk_store", "walk_crime", "walk_traffic", "age", "sex", "race", "income", "ins_type")
+
+# Set all -9 values to NA
+library(dplyr)
+df <- df %>% na_if(., -9)
+
+# Drop NA variables for final dataset (yields n=1,301)
+library(tidyr)
+df.nomissing <- drop_na(df)
+
+# Compare original merged dataset with the final to see differences
+summary(comparedf(df, df.nomissing))
+
+# Look at total missing rate
+MissingRate <-  1- nrow(df.nomissing)/nrow(df)
+
+# Change dataset name for ease
+data <- df.nomissing
+
+md.pattern(df, plot = TRUE, rotate.names = TRUE)
+
+```
+```{r}
+
+# Check variable types
+lapply(data, class)
+
+# All variable types are listed as numeric
+# Change weight_cat, trails, fields_courts, parks, sex, race, income, ins_type into factors
+
+# Weight
+data$weight_catf <- factor(data$weight_cat,
+      levels = c(1,2,3,4),
+      labels = c("Underweight", "Healthy Weight", "Overweight", "Obese"))
+# Check recategorization
+table(data$weight_cat, data$weight_catf)
+
+# Trails
+data$trailsf <- factor(data$trails,
+      levels = c(0,1),
+      labels = c("No Access", "Access"))
+# Check recategorization
+table(data$trails, data$trailsf)
+
+# Fields and courts
+data$fields_courtsf <- factor(data$fields_courts,
+      levels = c(0,1),
+      labels = c("No Access", "Access"))
+# Check recategorization
+table(data$fields_courts, data$fields_courtsf)
+
+# Parks
+data$parksf <- factor(data$parks,
+      levels = c(0,1),
+      labels = c("No Access", "Access"))
+# Check recategorization
+table(data$parks, data$parksf)
+
+# Sum outdoor rec variables to produce new outdoor recreation access score
+data <- data %>%
+  mutate(outdoor_rec = trails + parks + fields_courts)
+
+# Sex
+data$sexf <- factor(data$sex,
+      levels = c(1,2),
+      labels = c("Male", "Female"))
+# Check recategorization
+table(data$sex, data$sexf)
+
+# Race
+data$racef <- factor(data$race,
+      levels = c(1, 2, 3, 4),
+      labels = c("Hispanic", "Black or African-American Only", "White Only", "Other"))
+# Re-level race to set White Only as reference
+data$racef <- relevel(data$racef, ref = "White Only")
+# Check recategorization
+table(data$race, data$racef)
+
+# Income
+data$incomef <- factor(data$income,
+      levels = c(1,2),
+      labels = c("$0 - $99,999", "$100,000+"))
+# Check recategorization
+table(data$income, data$incomef)
+
+# Insurance
+data$ins_typef <- factor(data$ins_type,
+      levels = c(1, 2, 3),
+      labels = c("Medicaid/SCHIP", "Private Insurance", "Uninsured"))
+# Re-level insurance status to set Private Insurance as reference
+data$ins_typef <- relevel(data$ins_typef, ref = "Private Insurance")
+# Check recategorization
+table(data$ins_type, data$ins_typef)
+
+# Change neighborhood walkability & safety variables, which are Likert responses (walk_store, walk_crime, walk_traffic), to binary variables and regroup to indicate walkability/non-walkability
+
+# Walkability to stores
+data$walk_store[
+    data$walk_store==1|
+    data$walk_store==2] <- 0
+
+data$walk_store[
+    data$walk_store==3|
+    data$walk_store==4] <- 1
+
+# Crime decreases walkability
+data$walk_crime[
+    data$walk_crime==1|
+    data$walk_crime==2] <- 1
+
+data$walk_crime[
+    data$walk_crime==3|
+    data$walk_crime==4] <- 0
+
+# Traffic decreases walkability
+data$walk_traffic[
+    data$walk_traffic==1|
+    data$walk_traffic==2] <- 1
+
+data$walk_traffic[
+    data$walk_traffic==3|
+    data$walk_traffic==4] <- 0
+
+# Sum walkability variables to produce new walkability score
+data <- data %>%
+  mutate(walkability = walk_store + walk_crime + walk_traffic)
+
+# Change age variable values
+data$age[data$age==1] <- 11
+data$age[data$age==2] <- 12
+data$age[data$age==3] <- 13
+data$age[data$age==4] <- 14
+data$age[data$age==5] <- 15
+data$age[data$age==6] <- 16
+data$age[data$age==7] <- 17
+data$age[data$age==8] <- 18
+
+# Sum minutes of PA variables to produce total MVPA
+data <- data %>%
+  mutate(PAmin_weeklytotal = PAmin_oostotal + PAmin_wkndtotal)
+
+# Create half-hour measure of PA
+data <- data %>%
+  mutate(PA_halfhour = PAmin_weeklytotal/30)
+
+# Create variable to indicate meeting/not meeting weekly MVPA totals (~420 mins/wk)
+data$PA_meetrec[data$PAmin_weeklytotal < 420] <- "0"
+data$PA_meetrec[data$PAmin_weeklytotal >= 420] <- "1"
+data$PA_meetrec <- factor(data$PA_meetrec,
+      levels = c(0,1),
+      labels = c("Does Not Meet Recommendations", "Meets Recommendations"))
+class(data$PA_meetrec)
+
+summary(data)
+
+```
+
+### Descriptive statistics
+
+```{r}
+
+# BMI 
+descr(data$BMI)
+descr(data$PAmin_weeklytotal)
+
+# Relationship between race & outdoor recreation access
+ctable(data$trailsf, data$racef, chisq = TRUE)
+ctable(data$parksf, data$racef, chisq = TRUE)
+ctable(data$fields_courtsf, data$racef, chisq = TRUE)
+
+# Label variables
+label(data$age) <- "Age (years)"
+label(data$sexf) <- "Sex"
+label(data$racef) <- "Race"
+label(data$ins_typef) <- "Insurance type"
+label(data$walkability) <- "Neighborhood walkability score"
+label(data$outdoor_rec) <- "Outdoor recreation access score"
+label(data$PAmin_weeklytotal) <- "Total physical activity (mins/wk)"
+
+# Table 1 descriptives
+Table1 <- table1(~BMI + racef  + sexf + ins_typef  + walkability + outdoor_rec + PA_meetrec + PAmin_weeklytotal|weight_catf, overall="Total", footnote='SD = standard deviation', data)
+
+Table1
+
+```
+
+### Unadjusted models of DV & IV
+
+```{r}
+
+model1_PAhalf <- lm(BMI ~ PA_halfhour, data=data)
+summary(model1_PAhalf)
+
+```
+
+### Partially adjusted model with IV, DV, and confounders
+
+```{r}
+
+model2_PAhalf <- lm(BMI ~ PA_halfhour + age + sexf + racef + ins_typef, data=data)
+summary(model2_PAhalf)
+
+```
+
+### Diagnostics
+
+```{r}
+
+# Multicollinearity (VIF < 5)
+vif(model2_PAhalf)
+
+# Residual values are independent (Durbin Watson)
+dwtest(model2_PAhalf)
+
+# Homoscedasticity (standard predicted values x standardized residuals) and normality of residuals
+par(mfrow = c(2,2))
+plot(model2_PAhalf)
+
+# Influential cases (?)
+
+```
+### Full model
+
+```{r}
+
+model3_PAhalf <- lm(BMI ~ PA_halfhour + age + sexf + racef + ins_typef + outdoor_rec + walkability, data=data)
+summary(model3_PAhalf)
+
+```
+
+### Testing for interaction with outdoor recreation
+
+```{r}
+
+model4_outdoorint <- lm(BMI ~ PA_halfhour + age + sexf + racef + ins_typef + outdoor_rec + outdoor_rec*PA_halfhour, data=data)
+summary(model4_outdoorint)
+
+```
+### Test interaction effect with walkability
+
+```{r}
+
+model5_walkabilityint <- lm(BMI ~ PA_halfhour + age + sexf + racef + ins_typef + walkability +  walkability*PA_halfhour, data=data)
+summary(model5_walkabilityint)
+
+```
+
+### Test correlation of walkability and outdoor recreation access
+
+```{r}
+
+histogram_outdoor_rec <- ggplot(aes(x = outdoor_rec), data = data) +
+  geom_histogram(binwidth = 1)
+histogram_outdoor_rec
+
+histogram_walkability <- ggplot(aes(x = walkability), data = data) +
+  geom_histogram(binwidth = 1)
+
+histogram_walkability
+
+cor.test(data$outdoor_rec, data$walkability, method=c("pearson"))
+
+# These variables are highly correlated; walkability is not a true confounder, but is related to outdoor recreation access and should not be treated as a confounder--so removed walkability as confounder
+
+```
+### Disaggregating the outdoor rec score
+
+```{r}
+
+model3_rectype <- lm(BMI ~ PA_halfhour + age + sexf + racef + ins_typef + trailsf + parksf + fields_courtsf, data=data)
+summary(model3_rectype)
+
+```
+
+
+### Modelling using binary PA recommendations variable
+```{r}
+
+model2_PArec <- lm(BMI ~ PA_meetrec + age + sexf + racef + ins_typef, data=data)
+summary(model2_PArec)
+
+model3_PArec <- lm(BMI ~ PA_meetrec + age + sexf + racef + ins_typef + outdoor_rec, data=data)
+summary(model3_PArec)
+
+```
